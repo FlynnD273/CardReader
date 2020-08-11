@@ -22,7 +22,7 @@ namespace CardReader
 
         private Scalar lowerB = new Scalar();
         private Scalar upperB = new Scalar();
-        private Scalar hsvRadius = new Scalar(20, 40, 80);
+        private Scalar hsvRadius = new Scalar(50, 50, 100);
         private Scalar avg = new Scalar();
 
         private Drawing.Size imgSize;
@@ -40,9 +40,15 @@ namespace CardReader
 
             capture = new VideoCapture();
             capture.Open(vd.DeviceIndex);
-            Application.Idle += OnCameraFrame;
+            capture.XI_AutoWB = 0;
 
+            Application.Idle += OnCameraFrame;
             WindowState = FormWindowState.Maximized;
+
+            HNumber.Value = (decimal)hsvRadius[0];
+            SNumber.Value = (decimal)hsvRadius[1];
+            VNumber.Value = (decimal)hsvRadius[2];
+
         }
 
         private void OnCameraFrame(object sender, EventArgs e)
@@ -63,31 +69,32 @@ namespace CardReader
             Mat topDown = new Mat();
             img.CopyTo(topDown);
             Mat binImage = new Mat();
-            Cv2.InRange(img, lowerB, upperB, binImage);//Cv2.Canny(preprocessed, binImage, edges, 0, 7);
+            Mat pre = new Mat();
+            img.CopyTo(pre);
+            Cv2.GaussianBlur(pre, pre, new OpenCvSharp.Size(21, 21), 0);
+            Cv2.InRange(pre, lowerB, upperB, binImage);//Cv2.Canny(preprocessed, binImage, edges, 0, 7);
 
             OpenCvSharp.Point[][] contours;
             Cv2.FindContours(binImage, out contours, out _, RetrievalModes.CComp, ContourApproximationModes.ApproxSimple);
 
-            Rect bounds = new Rect(new OpenCvSharp.Point(0, 0), new OpenCvSharp.Size(0, 0));
+            Rect bounds = new Rect(0, 0, 0, 0);
+            OpenCvSharp.Point center = new OpenCvSharp.Point(0, 0);
+            OpenCvSharp.Point imgCenter = new OpenCvSharp.Point(img.Width / 2, img.Height / 2);
             for (int i = 0; i < contours.Length; i++)
             {
                 Rect r = Cv2.BoundingRect(contours[i]);
-                if (r.Width * r.Height > bounds.Width * bounds.Height)
+                OpenCvSharp.Point c = new OpenCvSharp.Point((r.Left + r.Right) / 2, (r.Top + r.Bottom) / 2);
+                if (r.Width * r.Height > bounds.Width * bounds.Height || Dist(center, imgCenter) > Dist(c, imgCenter))
                 {
                     bounds = r;
+                    center = c;
                 }
             }
 
-            if (contours.Length > 0)
+            if (bounds.Width * bounds.Height > 0)
             {
-                Mat mask = new Mat(new OpenCvSharp.Size(img.Width, img.Height), MatType.CV_8UC1);
-                mask.SetTo(new Scalar(0, 0, 0));
-                Cv2.Rectangle(mask, bounds, new Scalar(255), -1);
-                Mat temp = new Mat(new OpenCvSharp.Size(img.Width, img.Height), MatType.CV_8UC1);
-                temp.SetTo(new Scalar(255, 255, 255));
-                overlayImage(temp, binImage.SubMat(bounds), binImage, bounds.TopLeft);
-                //binImage.CopyTo(temp, mask);
-                //temp.CopyTo(binImage);
+                Mat temp = binImage.SubMat(bounds);
+                binImage = temp.CopyMakeBorder(bounds.Top, img.Height - bounds.Bottom, bounds.Left, img.Width - bounds.Right, BorderTypes.Isolated, new Scalar(255, 255, 255, 255));
             }
 
             Cv2.BitwiseNot(binImage, binImage);
@@ -147,62 +154,17 @@ namespace CardReader
 
             g.FillRectangle(new SolidBrush(Color.FromArgb(255, (int)avg[2], (int)avg[1], (int)avg[0])), 0, 0, 20, 20);
 
+            Mat blurred = new Mat();
+            Cv2.GaussianBlur(topDown, blurred, new OpenCvSharp.Size(), 11, 11);
+            Cv2.AddWeighted(topDown, 3, blurred, -2, 0, img);
+
             e.Graphics.DrawImage(screen, new Rectangle(new Drawing.Point(0, 0), imgSize));
             e.Graphics.DrawImage(binImage.ToBitmap(), new Rectangle(new Drawing.Point(imgSize.Width, 0), imgSize));
             e.Graphics.DrawImage(topDown.ToBitmap(), new Drawing.Point(0, imgSize.Height));
             //e.Graphics.DrawImage(mask.ToBitmap(), new Rectangle(imgSize.Width, imgSize.Height, imgSize.Width, imgSize.Height));
         }
-        
-        public static void overlayImage(Mat background, Mat foreground, Mat output, OpenCvSharp.Point location)
-        {
 
-            background.CopyTo(output);
 
-            for (int y = (int)Math.Max(location.Y, 0); y < background.Rows; ++y)
-            {
-
-                int fY = (int)(y - location.Y);
-
-                if (fY >= foreground.Rows)
-                    break;
-
-                for (int x = (int)Math.Max(location.X, 0); x < background.Cols; ++x)
-                {
-                    int fX = x - location.X;
-                    if (fX >= foreground.Cols)
-                    {
-                        break;
-                    }
-
-                    double opacity;
-                    double[] finalPixelValue = new double[4];
-
-                    opacity = foreground.Get<Scalar>(fY, fX)[3];
-
-                    finalPixelValue[0] = background.Get<Scalar>(y, x)[0];
-                    finalPixelValue[1] = background.Get<Scalar>(y, x)[1];
-                    finalPixelValue[2] = background.Get<Scalar>(y, x)[2];
-                    finalPixelValue[3] = background.Get<Scalar>(y, x)[3];
-
-                    for (int c = 0; c < output.Channels(); ++c)
-                    {
-                        if (opacity > 0)
-                        {
-                            double foregroundPx = foreground.Get<Scalar>(fY, fX)[c];
-                            double backgroundPx = background.Get<Scalar>(y, x)[c];
-
-                            float fOpacity = (float)(opacity / 255);
-                            finalPixelValue[c] = ((backgroundPx * (1.0 - fOpacity)) + (foregroundPx * fOpacity));
-                            if (c == 3)
-                            {
-                                finalPixelValue[c] = foreground.Get<Scalar>(fY, fX)[3];
-                            }
-                        }
-                    }
-                    output.At<Scalar>(y, x) = new Scalar(finalPixelValue[0], finalPixelValue[1], finalPixelValue[2], finalPixelValue[3]);
-                }
-            }
-        }
 
         private Mat TransformTopDown(Mat baseImg, Drawing.Point[] poly)
         {
@@ -344,6 +306,11 @@ namespace CardReader
             return Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
         }
 
+        private double Dist(OpenCvSharp.Point a, OpenCvSharp.Point b)
+        {
+            return Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+        }
+
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
@@ -411,6 +378,21 @@ namespace CardReader
             {
                 Form1_MouseDown(sender, e);
             }
+        }
+
+        private void HNumber_ValueChanged(object sender, EventArgs e)
+        {
+            hsvRadius[0] = (double)HNumber.Value;
+        }
+
+        private void SNumber_ValueChanged(object sender, EventArgs e)
+        {
+            hsvRadius[1] = (double)SNumber.Value;
+        }
+
+        private void VNumber_ValueChanged(object sender, EventArgs e)
+        {
+            hsvRadius[2] = (double)VNumber.Value;
         }
     }
 }
