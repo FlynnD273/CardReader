@@ -9,11 +9,13 @@ using System.Drawing;
 using OpenCvSharp;
 using OpenCvSharp.Extensions;
 using OpenCvSharp.Detail;
+using System.IO;
 
 namespace CardReader
 {
     public partial class Form1 : Form
     {
+        private bool save = false;
         private Mat img;
         private VideoCapture capture;
 
@@ -36,19 +38,19 @@ namespace CardReader
             img = new Mat();
 
             VideoDeviceDialog vd = new VideoDeviceDialog();
-            vd.ShowDialog();
+            //vd.ShowDialog();
 
             capture = new VideoCapture();
-            capture.Open(vd.DeviceIndex);
-            capture.XI_AutoWB = 0;
+            //capture.Open(vd.DeviceIndex);
 
-            Application.Idle += OnCameraFrame;
+            //Application.Idle += OnCameraFrame;
             WindowState = FormWindowState.Maximized;
 
             HNumber.Value = (decimal)hsvRadius[0];
             SNumber.Value = (decimal)hsvRadius[1];
             VNumber.Value = (decimal)hsvRadius[2];
 
+            img = new Mat("IMG.JPG");
         }
 
         private void OnCameraFrame(object sender, EventArgs e)
@@ -66,13 +68,52 @@ namespace CardReader
             if (img.Cols == 0)
                 return;
 
+
+            //var mats = FindCard(img);
+
+            //Mat binImage = mats.Item1;
+            //Mat topDown = mats.Item2;
+            
+            imgSize = GetMaxSize(e.Graphics.VisibleClipBounds.Size.ToSize(), new Drawing.Size(img.Width, img.Height), 1, 1);
+            imgScale = (double)imgSize.Width / img.Width;
+
+            e.Graphics.DrawImage(img.ToBitmap(), new Rectangle(new Drawing.Point(0, 0), imgSize));
+
+            //e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(255, (int)avg[2], (int)avg[1], (int)avg[0])), 0, 0, 20, 20);
+
+            //if (SharpenBox.Checked)
+            //    Sharpen(topDown, 1, 15);
+
+            //e.Graphics.DrawImage(img.ToBitmap(), new Rectangle(new Drawing.Point(0, 0), imgSize));
+            //e.Graphics.DrawImage(binImage.ToBitmap(), new Rectangle(new Drawing.Point(imgSize.Width, 0), imgSize));
+            //e.Graphics.DrawImage(topDown.ToBitmap(), new Rectangle(new Drawing.Point(0, imgSize.Height), new Drawing.Size((int)(imgSize.Height * cardRatio), imgSize.Height)));
+        }
+
+        private Drawing.Size GetMaxSize(Drawing.Size winSize, Drawing.Size imgSize, double xFrac, double yFrac)
+        {
+            double ratio = (double)imgSize.Width / imgSize.Height;
+            Drawing.Size finalSize;
+            if (winSize.Width * xFrac / imgSize.Width < winSize.Height * yFrac / imgSize.Height)
+            {
+                finalSize = new Drawing.Size((int)(winSize.Width * xFrac), (int)(winSize.Width * yFrac / ratio));
+            }
+            else
+            {
+                finalSize = new Drawing.Size((int)(winSize.Height * xFrac * ratio), (int)(winSize.Height * yFrac));
+            }
+
+            return finalSize;
+        }
+
+        private Tuple<Mat, Mat> FindCard(Mat img)
+        {
             Mat topDown = new Mat();
             img.CopyTo(topDown);
             Mat binImage = new Mat();
             Mat pre = new Mat();
             img.CopyTo(pre);
             Cv2.GaussianBlur(pre, pre, new OpenCvSharp.Size(21, 21), 0);
-            Cv2.InRange(pre, lowerB, upperB, binImage);//Cv2.Canny(preprocessed, binImage, edges, 0, 7);
+            Cv2.InRange(pre, lowerB, upperB, binImage);
 
             OpenCvSharp.Point[][] contours;
             Cv2.FindContours(binImage, out contours, out _, RetrievalModes.CComp, ContourApproximationModes.ApproxSimple);
@@ -99,13 +140,7 @@ namespace CardReader
 
             Cv2.BitwiseNot(binImage, binImage);
 
-            Bitmap screen = new Bitmap(img.Width, img.Height);
-            Graphics g = Graphics.FromImage(screen);
-            g.DrawImage(img.ToBitmap(), 0, 0);
-
-            g.DrawRectangle(Pens.Red, bounds.Left, bounds.Top, bounds.Width, bounds.Height);
-
-            #region Code the image and drawing to Graphics g goes here
+            //g.DrawRectangle(Pens.Red, bounds.Left, bounds.Top, bounds.Width, bounds.Height);
 
             Cv2.FindContours(binImage, out contours, out _, RetrievalModes.CComp, ContourApproximationModes.ApproxSimple);
 
@@ -131,40 +166,20 @@ namespace CardReader
 
             if (poly != null)
             {
-                g.DrawPolygon(new Pen(Brushes.White, 5), poly);
-
                 topDown = TransformTopDown(topDown, poly);
             }
 
-            #endregion
-
-            Drawing.Size winSize = e.Graphics.VisibleClipBounds.Size.ToSize();
-            Drawing.Size s = screen.Size;
-            double ratio = (double)s.Width / s.Height;
-            if ((double)winSize.Width / 2 / s.Width < (double)winSize.Height / 2 / s.Height)
-            {
-                imgSize = new Drawing.Size(winSize.Width / 2, (int)(winSize.Width / 2 / ratio));
-            }
-            else
-            {
-                imgSize = new Drawing.Size((int)(winSize.Height / 2 * ratio), winSize.Height / 2);
-            }
-
-            imgScale = (double)imgSize.Width / img.Width;
-
-            g.FillRectangle(new SolidBrush(Color.FromArgb(255, (int)avg[2], (int)avg[1], (int)avg[0])), 0, 0, 20, 20);
-
-            Mat blurred = new Mat();
-            Cv2.GaussianBlur(topDown, blurred, new OpenCvSharp.Size(), 11, 11);
-            Cv2.AddWeighted(topDown, 3, blurred, -2, 0, img);
-
-            e.Graphics.DrawImage(screen, new Rectangle(new Drawing.Point(0, 0), imgSize));
-            e.Graphics.DrawImage(binImage.ToBitmap(), new Rectangle(new Drawing.Point(imgSize.Width, 0), imgSize));
-            e.Graphics.DrawImage(topDown.ToBitmap(), new Drawing.Point(0, imgSize.Height));
-            //e.Graphics.DrawImage(mask.ToBitmap(), new Rectangle(imgSize.Width, imgSize.Height, imgSize.Width, imgSize.Height));
+            return Tuple.Create(binImage, topDown);
         }
 
-
+        private static void Sharpen(Mat img, double weight, int blur)
+        {
+            //Cv2.Resize(img, img, new OpenCvSharp.Size(img.Size().Width * 3 / 2, img.Size().Height * 3 / 2));
+            Cv2.PyrUp(img, img);
+            Mat blurred = new Mat();
+            Cv2.GaussianBlur(img, blurred, new OpenCvSharp.Size(), blur, blur);
+            Cv2.AddWeighted(img, 1 + weight, blurred, -weight, 0, img);
+        }
 
         private Mat TransformTopDown(Mat baseImg, Drawing.Point[] poly)
         {
@@ -357,6 +372,8 @@ namespace CardReader
             lowerB.Val3 = 0;
             upperB.Val3 = 255;
 
+
+            Invalidate();
         }
 
         private Scalar CvtColor (Scalar input, ColorConversionCodes cvt)
