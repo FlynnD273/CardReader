@@ -10,6 +10,8 @@ using OpenCvSharp;
 using OpenCvSharp.Extensions;
 using OpenCvSharp.Detail;
 using System.IO;
+using Microsoft.Kinect;
+using System.Drawing.Imaging;
 
 namespace CardReader
 {
@@ -30,6 +32,8 @@ namespace CardReader
         private Drawing.Size imgSize;
         private Drawing.Point mouseClick;
 
+        private KinectSensor kinectCam;
+
         public Form1()
         {
             InitializeComponent();
@@ -38,12 +42,23 @@ namespace CardReader
             img = new Mat();
 
             VideoDeviceDialog vd = new VideoDeviceDialog();
-            //vd.ShowDialog();
+            vd.ShowDialog();
 
-            capture = new VideoCapture();
-            //capture.Open(vd.DeviceIndex);
+            if (vd.DeviceIndex < vd.Cameras)
+            {
+                capture = new VideoCapture();
+                capture.Open(vd.DeviceIndex);
+                Application.Idle += OnCameraFrame;
+            }
+            else
+            {
+                kinectCam = KinectSensor.KinectSensors[vd.DeviceIndex - vd.Cameras];
+                kinectCam.ColorStream.Enable(ColorImageFormat.RgbResolution1280x960Fps12);
+                kinectCam.Start();
+                //kinectCam.ElevationAngle = 0;
+                kinectCam.AllFramesReady += new EventHandler<AllFramesReadyEventArgs>(FrameReady);
+            }
 
-            //Application.Idle += OnCameraFrame;
             WindowState = FormWindowState.Maximized;
 
             HNumber.Value = (decimal)hsvRadius[0];
@@ -53,10 +68,43 @@ namespace CardReader
             img = new Mat("IMG.JPG");
         }
 
+        private void FrameReady(object sender, AllFramesReadyEventArgs e)
+        {
+            IntPtr colorPtr;
+            Bitmap kinectBitmap;
+
+            using (ColorImageFrame colorFrame = e.OpenColorImageFrame())
+            {
+                if (colorFrame == null) return;
+
+                byte[] colorData = new byte[colorFrame.PixelDataLength];
+
+                colorFrame.CopyPixelDataTo(colorData);
+
+                colorPtr = Marshal.AllocHGlobal(colorData.Length * 2);
+                Marshal.Copy(colorData, 0, colorPtr, colorData.Length);
+
+                kinectBitmap = new Bitmap(
+                    colorFrame.Width,
+                    colorFrame.Height,
+                    colorFrame.Width * colorFrame.BytesPerPixel,
+                    PixelFormat.Format32bppRgb,
+                    colorPtr);
+            }
+
+            img = kinectBitmap.ToMat();
+            Cv2.Flip(img, img, FlipMode.Y);
+
+            kinectBitmap.Dispose();
+            Marshal.FreeHGlobal(colorPtr);
+
+            Invalidate();
+        }
+
         private void OnCameraFrame(object sender, EventArgs e)
         {
             img = capture.RetrieveMat();
-            ////Cv2.Flip(img, img, FlipMode.Y);
+            //Cv2.Flip(img, img, FlipMode.Y);
 
             Invalidate();
         }
@@ -69,24 +117,24 @@ namespace CardReader
                 return;
 
 
-            //var mats = FindCard(img);
+            var mats = FindCard(img);
 
-            //Mat binImage = mats.Item1;
-            //Mat topDown = mats.Item2;
+            Mat binImage = mats.Item1;
+            Mat topDown = mats.Item2;
             
-            imgSize = GetMaxSize(e.Graphics.VisibleClipBounds.Size.ToSize(), new Drawing.Size(img.Width, img.Height), 1, 1);
+            imgSize = GetMaxSize(e.Graphics.VisibleClipBounds.Size.ToSize(), new Drawing.Size(img.Width, img.Height), 0.5, 0.5);
             imgScale = (double)imgSize.Width / img.Width;
+
+            if (SharpenBox.Checked)
+                img = Sharpen(img, 1, 21);
 
             e.Graphics.DrawImage(img.ToBitmap(), new Rectangle(new Drawing.Point(0, 0), imgSize));
 
             //e.Graphics.FillRectangle(new SolidBrush(Color.FromArgb(255, (int)avg[2], (int)avg[1], (int)avg[0])), 0, 0, 20, 20);
 
-            //if (SharpenBox.Checked)
-            //    Sharpen(topDown, 1, 15);
-
-            //e.Graphics.DrawImage(img.ToBitmap(), new Rectangle(new Drawing.Point(0, 0), imgSize));
-            //e.Graphics.DrawImage(binImage.ToBitmap(), new Rectangle(new Drawing.Point(imgSize.Width, 0), imgSize));
-            //e.Graphics.DrawImage(topDown.ToBitmap(), new Rectangle(new Drawing.Point(0, imgSize.Height), new Drawing.Size((int)(imgSize.Height * cardRatio), imgSize.Height)));
+            e.Graphics.DrawImage(img.ToBitmap(), new Rectangle(new Drawing.Point(0, 0), imgSize));
+            e.Graphics.DrawImage(binImage.ToBitmap(), new Rectangle(new Drawing.Point(imgSize.Width, 0), imgSize));
+            e.Graphics.DrawImage(topDown.ToBitmap(), new Rectangle(new Drawing.Point(0, imgSize.Height), new Drawing.Size((int)(imgSize.Height * cardRatio), imgSize.Height)));
         }
 
         private Drawing.Size GetMaxSize(Drawing.Size winSize, Drawing.Size imgSize, double xFrac, double yFrac)
@@ -172,13 +220,15 @@ namespace CardReader
             return Tuple.Create(binImage, topDown);
         }
 
-        private static void Sharpen(Mat img, double weight, int blur)
+        private Mat Sharpen(Mat img, double weight, int blur)
         {
             //Cv2.Resize(img, img, new OpenCvSharp.Size(img.Size().Width * 3 / 2, img.Size().Height * 3 / 2));
             Cv2.PyrUp(img, img);
             Mat blurred = new Mat();
             Cv2.GaussianBlur(img, blurred, new OpenCvSharp.Size(), blur, blur);
             Cv2.AddWeighted(img, 1 + weight, blurred, -weight, 0, img);
+            Cv2.PyrDown(img, img);
+            return img;
         }
 
         private Mat TransformTopDown(Mat baseImg, Drawing.Point[] poly)
